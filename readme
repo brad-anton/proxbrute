@@ -1,0 +1,17 @@
+ProxBrute v0.3 for r517
+by brad antoniewicz
+foundstone
+------------------------
+
+To patch SVN r517:
+	svn co -r 517 http://proxmark3.googlecode.com/svn/trunk proxmark3-read-only
+        cd proxmark3-read-only (or whatever)
+        patch -p1 < ../proxbrute-bundle/proxbrute-r517.patch
+	cd armsrc
+	make
+
+Or just flash with
+
+        client/flasher images/osimage.elf
+
+For everything else, see the whitepaper on foundstone.com
